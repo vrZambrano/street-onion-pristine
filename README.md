@@ -1,1 +1,11 @@
 # street-onion-pristine
+
+## .env parameters
+```
+HF_TOKEN=
+OPENROUTER_API_BASE=
+OPENROUTER_MODEL_NAME=
+OPENROUTER_API_KEY=
+ANTHROPIC_API_KEY=
+````
+
