@@ -10,6 +10,7 @@ from selenium.webdriver.chrome.options import Options
 import zipfile
 from dotenv import load_dotenv
 import boto3
+import re
 
 class B3DataDownloader:
     def __init__(self):
@@ -128,6 +129,9 @@ class B3DataDownloader:
                 # Aguardar download iniciar/completar
                 time.sleep(10)
                 
+                # Limpar downloads duplicados
+                self.remove_duplicate_downloads()
+                
                 # Verificar se arquivo foi baixado
                 files = os.listdir(self.data_folder)
                 csv_files = [f for f in files if f.endswith('.csv') or f.endswith('.zip')]
@@ -154,6 +158,42 @@ class B3DataDownloader:
         finally:
             if driver:
                 driver.quit()
+    
+    def remove_duplicate_downloads(self):
+        """
+        Remove arquivos de download duplicados, mantendo o original.
+        Ex: IBOVDia_22-07-25.csv (original)
+            IBOVDia_22-07-25 (1).csv (duplicado)
+        """
+        print("Verificando arquivos duplicados...")
+        files = os.listdir(self.data_folder)
+        
+        # Regex para encontrar arquivos duplicados como "IBOVDia_dd-mm-yy (n).csv"
+        duplicate_pattern = re.compile(r"(IBOVDia_\d{2}-\d{2}-\d{2}) \(\d+\)\.csv")
+        
+        originals = set()
+        duplicates = []
+        
+        for f in files:
+            match = duplicate_pattern.match(f)
+            if match:
+                # É um arquivo duplicado
+                duplicates.append(f)
+            elif f.startswith("IBOVDia_") and f.endswith(".csv"):
+                # É um arquivo original
+                originals.add(f)
+                
+        if not duplicates:
+            print("Nenhum arquivo duplicado encontrado.")
+            return
+            
+        for dup in duplicates:
+            try:
+                dup_path = os.path.join(self.data_folder, dup)
+                os.remove(dup_path)
+                print(f"Arquivo duplicado removido: {dup}")
+            except OSError as e:
+                print(f"Erro ao remover {dup}: {e}")
     
     def download_with_requests(self):
         """
@@ -251,6 +291,55 @@ class B3DataDownloader:
             print(f"Erro ao fazer upload para S3: {str(e)}")
             return False
     
+    def clean_s3_bucket(self):
+        """
+        Remove arquivos duplicados do bucket S3.
+        """
+        if not self.s3_client:
+            print("Cliente S3 não está configurado.")
+            return
+
+        print("Verificando arquivos duplicados no bucket S3...")
+        
+        try:
+            # Listar todos os objetos no bucket
+            response = self.s3_client.list_objects_v2(Bucket=self.aws_bucket, Prefix="ibov_data/")
+            if 'Contents' not in response:
+                print("Nenhum arquivo encontrado no bucket.")
+                return
+
+            all_files = [item['Key'] for item in response['Contents']]
+            
+            # Regex para encontrar o padrão de duplicado
+            duplicate_pattern = re.compile(r"ibov_data/(\d{8}_\d{6})_(IBOVDia_\d{2}-\d{2}-\d{2}) \(\d+\)\.csv")
+            
+            to_delete = []
+
+            for key in all_files:
+                if duplicate_pattern.match(key):
+                    to_delete.append({'Key': key})
+
+            if not to_delete:
+                print("Nenhum arquivo duplicado encontrado no S3.")
+                return
+
+            print(f"Encontrados {len(to_delete)} arquivos duplicados para remover.")
+            
+            # Remover os arquivos duplicados
+            delete_response = self.s3_client.delete_objects(
+                Bucket=self.aws_bucket,
+                Delete={'Objects': to_delete}
+            )
+            
+            if 'Errors' in delete_response and delete_response['Errors']:
+                for error in delete_response['Errors']:
+                    print(f"Erro ao deletar {error['Key']}: {error['Message']}")
+            else:
+                print("Arquivos duplicados removidos com sucesso do S3.")
+
+        except Exception as e:
+            print(f"Erro ao limpar o bucket S3: {str(e)}")
+    
     def download_data(self, method="selenium"):
         """
         Método principal para baixar os dados
@@ -271,6 +360,9 @@ class B3DataDownloader:
 
 def main():
     downloader = B3DataDownloader()
+    
+    # Limpar o bucket S3 antes de começar
+    downloader.clean_s3_bucket()
     
     # Tentar primeiro com Selenium (mais confiável)
     print("=== Tentativa 1: Selenium ===")
