@@ -141,10 +141,16 @@ class B3DataDownloader:
                                     key=os.path.getctime)
                     print(f"Arquivo baixado com sucesso: {latest_file}")
                     
-                    # Upload para S3
-                    self.upload_to_s3(latest_file)
-                    
-                    return latest_file
+                    # Renomear o arquivo com o novo formato
+                    renamed_file = self.rename_file_with_date_format(latest_file)
+                    if renamed_file:
+                        # Upload para S3 com o novo nome
+                        self.upload_to_s3(renamed_file)
+                        return renamed_file
+                    else:
+                        # Se falhar no rename, fazer upload com o nome original
+                        self.upload_to_s3(latest_file)
+                        return latest_file
                 else:
                     print("Nenhum arquivo CSV/ZIP foi encontrado na pasta de download.")
                     return None
@@ -194,6 +200,70 @@ class B3DataDownloader:
                 print(f"Arquivo duplicado removido: {dup}")
             except OSError as e:
                 print(f"Erro ao remover {dup}: {e}")
+
+    def extract_date_from_csv(self, file_path):
+        """
+        Extrai a data da primeira linha do arquivo CSV.
+        
+        Args:
+            file_path (str): Caminho completo para o arquivo CSV
+            
+        Returns:
+            str: Data no formato yy-mm-dd extraída do arquivo, ou None se não encontrar
+        """
+        try:
+            with open(file_path, 'r', encoding='utf-8') as file:
+                first_line = file.readline().strip()
+                # Procurar padrão "IBOV - Carteira do Dia dd/mm/yy"
+                import re
+                date_match = re.search(r'IBOV - Carteira do Dia (\d{2}/\d{2}/\d{2})', first_line)
+                if date_match:
+                    date_str = date_match.group(1)
+                    # Converter dd/mm/yy para yy-mm-dd
+                    day, month, year = date_str.split('/')
+                    return f"{year}-{month}-{day}"
+                return None
+        except Exception as e:
+            print(f"Erro ao extrair data do CSV {file_path}: {str(e)}")
+            return None
+            
+    def rename_file_with_date_format(self, file_path):
+        """
+        Renomeia o arquivo para o formato IBOVDia-yy-mm-dd.csv com base na data extraída do conteúdo.
+        
+        Args:
+            file_path (str): Caminho completo para o arquivo CSV
+            
+        Returns:
+            str: Novo caminho do arquivo, ou None se falhar
+        """
+        if not os.path.exists(file_path):
+            print(f"Arquivo não encontrado: {file_path}")
+            return None
+            
+        # Extrair a data do conteúdo do CSV
+        date_str = self.extract_date_from_csv(file_path)
+        if not date_str:
+            print(f"Não foi possível extrair a data do arquivo: {file_path}")
+            return None
+            
+        # Criar novo nome de arquivo
+        new_filename = f"IBOVDia-{date_str}.csv"
+        new_file_path = os.path.join(self.data_folder, new_filename)
+        
+        # Verificar se o arquivo com o novo nome já existe
+        if os.path.exists(new_file_path):
+            print(f"Arquivo já existe com o novo nome: {new_file_path}")
+            return new_file_path
+            
+        try:
+            # Renomear o arquivo
+            os.rename(file_path, new_file_path)
+            print(f"Arquivo renomeado: {os.path.basename(file_path)} -> {os.path.basename(new_file_path)}")
+            return new_file_path
+        except Exception as e:
+            print(f"Erro ao renomear arquivo {file_path}: {str(e)}")
+            return None
     
     def download_with_requests(self):
         """
