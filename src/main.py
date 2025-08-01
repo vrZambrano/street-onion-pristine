@@ -11,6 +11,9 @@ import zipfile
 from dotenv import load_dotenv
 import boto3
 import re
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 class B3DataDownloader:
     def __init__(self):
@@ -32,6 +35,42 @@ class B3DataDownloader:
         
         # Initialize S3 client
         self.s3_client = self.init_s3_client()
+    
+    def convert_csv_to_parquet(self, csv_file_path):
+        """
+        Converte arquivo CSV da B3 para formato Parquet
+        
+        Args:
+            csv_file_path (str): Caminho do arquivo CSV
+            
+        Returns:
+            str: Caminho do arquivo Parquet gerado, ou None se falhar
+        """
+        try:
+            # Ler CSV pulando a primeira linha (título) e usando o ponto e vírgula como separador
+            df = pd.read_csv(
+                csv_file_path, 
+                encoding='latin1', 
+                sep=';', 
+                skiprows=1,  # Pular a primeira linha com o título
+                skipfooter=2,  # Pular as duas últimas linhas com informações agregadas
+                engine='python'  # Necessário para skipfooter
+            )
+            
+            # Remover última coluna vazia (causada pelo ; no final)
+            df = df.iloc[:, :-1]
+            
+            # Converter para Parquet
+            parquet_path = csv_file_path.replace('.csv', '.parquet')
+            df.to_parquet(parquet_path, index=False, engine='pyarrow')
+            
+            # Remover arquivo CSV original
+            os.remove(csv_file_path)
+            
+            return parquet_path
+        except Exception as e:
+            print(f"Erro ao converter CSV para Parquet: {str(e)}")
+            return None
     
     def ensure_data_folder(self):
         """Cria a pasta /data se ela não existir"""
@@ -141,14 +180,41 @@ class B3DataDownloader:
                                     key=os.path.getctime)
                     print(f"Arquivo baixado com sucesso: {latest_file}")
                     
-                    # Renomear o arquivo com o novo formato
-                    renamed_file = self.rename_file_with_date_format(latest_file)
-                    if renamed_file:
-                        # Upload para S3 com o novo nome
-                        self.upload_to_s3(renamed_file)
-                        return renamed_file
+                    # Se for um arquivo ZIP, precisamos extrair primeiro
+                    if latest_file.endswith('.zip'):
+                        # Implementar extração de ZIP se necessário
+                        print("Arquivo ZIP encontrado. Extração não implementada.")
+                        self.upload_to_s3(latest_file)
+                        return latest_file
+                    
+                    # Converter CSV para Parquet
+                    parquet_file = self.convert_csv_to_parquet(latest_file)
+                    if parquet_file:
+                        print(f"Arquivo convertido para Parquet: {parquet_file}")
+                        
+                        # Extrair a data do arquivo Parquet para o particionamento
+                        filename = os.path.basename(parquet_file)
+                        date_part = None
+                        
+                        # Tentar extrair data de diferentes formatos de nome de arquivo
+                        if "IBOVDia" in filename and filename.endswith(".parquet"):
+                            # Procurar padrão dd-mm-yy no nome do arquivo
+                            import re
+                            date_match = re.search(r'(\d{2}-\d{2}-\d{2})', filename)
+                            if date_match:
+                                date_part = date_match.group(1)
+                                print(f"Data extraída do nome do arquivo: {date_part}")
+                        
+                        if date_part:
+                            # Upload para S3 com particionamento
+                            self.upload_to_s3_partitioned(parquet_file, date_part)
+                        else:
+                            # Fallback para upload padrão se não conseguir extrair a data
+                            print("Não foi possível extrair a data do nome do arquivo, usando upload padrão")
+                            self.upload_to_s3(parquet_file)
+                        return parquet_file
                     else:
-                        # Se falhar no rename, fazer upload com o nome original
+                        # Se falhar na conversão, fazer upload do CSV original
                         self.upload_to_s3(latest_file)
                         return latest_file
                 else:
@@ -209,19 +275,19 @@ class B3DataDownloader:
             file_path (str): Caminho completo para o arquivo CSV
             
         Returns:
-            str: Data no formato yy-mm-dd extraída do arquivo, ou None se não encontrar
+            str: Data no formato dd-mm-yy extraída do arquivo, ou None se não encontrar
         """
         try:
-            with open(file_path, 'r', encoding='utf-8') as file:
+            with open(file_path, 'r', encoding='latin1') as file:
                 first_line = file.readline().strip()
                 # Procurar padrão "IBOV - Carteira do Dia dd/mm/yy"
                 import re
                 date_match = re.search(r'IBOV - Carteira do Dia (\d{2}/\d{2}/\d{2})', first_line)
                 if date_match:
                     date_str = date_match.group(1)
-                    # Converter dd/mm/yy para yy-mm-dd
+                    # Converter dd/mm/yy para dd-mm-yy (formato do nome do arquivo)
                     day, month, year = date_str.split('/')
-                    return f"{year}-{month}-{day}"
+                    return f"{day}-{month}-{year}"
                 return None
         except Exception as e:
             print(f"Erro ao extrair data do CSV {file_path}: {str(e)}")
@@ -247,8 +313,12 @@ class B3DataDownloader:
             print(f"Não foi possível extrair a data do arquivo: {file_path}")
             return None
             
+        # Converter formato dd-mm-yy para yy-mm-dd
+        day, month, year = date_str.split('-')
+        new_date_str = f"{year}-{month}-{day}"
+        
         # Criar novo nome de arquivo
-        new_filename = f"IBOVDia-{date_str}.csv"
+        new_filename = f"IBOVDia-{new_date_str}.csv"
         new_file_path = os.path.join(self.data_folder, new_filename)
         
         # Verificar se o arquivo com o novo nome já existe
@@ -312,10 +382,38 @@ class B3DataDownloader:
                                 
                                 print(f"Arquivo baixado com sucesso: {filepath}")
                                 
-                                # Upload para S3
-                                self.upload_to_s3(filepath)
-                                
-                                return filepath
+                                # Converter CSV para Parquet
+                                parquet_file = self.convert_csv_to_parquet(filepath)
+                                if parquet_file:
+                                    print(f"Arquivo convertido para Parquet: {parquet_file}")
+                                    
+                                    # Extrair a data do arquivo Parquet para o particionamento
+                                    filename = os.path.basename(parquet_file)
+                                    date_part = None
+                                    
+                                    if filename.startswith("IBOV_") and filename.endswith(".parquet"):
+                                        # Extrair yyyymmdd do nome do arquivo e converter para dd-mm-yy
+                                        date_str = filename[5:-8]  # Remove "IBOV_" e ".parquet"
+                                        if len(date_str) == 8 and date_str.isdigit():
+                                            # Converter yyyymmdd para dd-mm-yy
+                                            year = date_str[2:4]  # Pegar apenas os dois últimos dígitos do ano
+                                            month = date_str[4:6]
+                                            day = date_str[6:8]
+                                            date_part = f"{day}-{month}-{year}"
+                                            print(f"Data extraída e convertida: {date_part}")
+                                    
+                                    if date_part:
+                                        # Upload para S3 com particionamento
+                                        self.upload_to_s3_partitioned(parquet_file, date_part)
+                                    else:
+                                        # Fallback para upload padrão se não conseguir extrair a data
+                                        print("Não foi possível extrair a data do nome do arquivo, usando upload padrão")
+                                        self.upload_to_s3(parquet_file)
+                                    return parquet_file
+                                else:
+                                    # Se falhar na conversão, fazer upload do CSV original
+                                    self.upload_to_s3(filepath)
+                                    return filepath
                             
                     except Exception as e:
                         print(f"Erro ao tentar URL {url}: {str(e)}")
@@ -330,6 +428,58 @@ class B3DataDownloader:
         except Exception as e:
             print(f"Erro geral no método requests: {str(e)}")
             return None
+    
+    def upload_to_s3_partitioned(self, file_path, date_str):
+        """
+        Faz upload do arquivo para o bucket S3 com particionamento por data
+        
+        Args:
+            file_path (str): Caminho do arquivo local
+            date_str (str): Data no formato dd-mm-yy ou yy-mm-dd
+            
+        Returns:
+            bool: True se upload bem-sucedido, False caso contrário
+        """
+        if not self.s3_client:
+            print("Cliente S3 não está configurado.")
+            return False
+        
+        try:
+            # Extrair componentes da data (pode vir em formato dd-mm-yy ou yy-mm-dd)
+            parts = date_str.split('-')
+            
+            # Se o primeiro componente tem 2 dígitos e é > 31, é ano (formato yy-mm-dd)
+            # Se o primeiro componente tem 2 dígitos e é <= 31, é dia (formato dd-mm-yy)
+            if len(parts[0]) == 2 and int(parts[0]) > 31:
+                # Formato yy-mm-dd
+                year, month, day = parts
+            else:
+                # Formato dd-mm-yy
+                day, month, year = parts
+            
+            # Converter ano para 4 dígitos
+            if len(year) == 2:
+                full_year = f"20{year}" if int(year) < 50 else f"19{year}"
+            else:
+                full_year = year
+            
+            # Garantir que mês e dia tenham 2 dígitos
+            month = month.zfill(2)
+            day = day.zfill(2)
+            
+            # Criar chave com particionamento
+            filename = os.path.basename(file_path)
+            s3_key = f"ibov_data/ano={full_year}/mes={month}/dia={day}/{filename}"
+            
+            print(f"Fazendo upload para S3: {s3_key}")
+            self.s3_client.upload_file(file_path, self.aws_bucket, s3_key)
+            
+            print(f"Upload para S3 concluído com sucesso!")
+            print(f"Arquivo particionado por: ano={full_year}/mes={month}/dia={day}")
+            return True
+        except Exception as e:
+            print(f"Erro ao fazer upload para S3: {str(e)}")
+            return False
     
     def upload_to_s3(self, file_path):
         """
