@@ -8,8 +8,11 @@ Este projeto contém um script Python para baixar dados do IBOV (Índice Bovespa
 - Emprega duas estratégias de download:
     1.  **Selenium/WebDriver:** O método principal e mais confiável.
     2.  **Requisições HTTP:** Um método de fallback.
-- Salva os arquivos baixados (CSV ou ZIP) no diretório `./data/` com um timestamp.
-- Envia os arquivos baixados para um bucket AWS S3 configurado no caminho `ibov_data/YYYYMMDD_HHMMSS_filename`.
+- Salva os arquivos baixados (CSV ou ZIP) no diretório `./data/`.
+- Converte arquivos CSV baixados para o formato Parquet.
+- Remove downloads duplicados localmente.
+- Envia os arquivos baixados para um bucket AWS S3, com particionamento por data (`ibov_data/ano=YYYY/mes=MM/dia=DD/`).
+- Remove arquivos duplicados do bucket S3.
 - Utiliza o Chrome em modo headless para web scraping.
 
 ## Como Executar
@@ -35,7 +38,7 @@ Este projeto contém um script Python para baixar dados do IBOV (Índice Bovespa
     ```
 3.  **Execute o script:**
     ```bash
-    python main.py
+    python src/main.py
     ```
 
 ## Dependências

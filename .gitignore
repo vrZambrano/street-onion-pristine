@@ -177,3 +177,5 @@ GEMINI.md
 CLAUDE.md
 
 *.parquet
+poetry.lock
+.qwen/settings.json
