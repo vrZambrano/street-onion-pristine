@@ -64,8 +64,8 @@ class B3DataDownloader:
             parquet_path = csv_file_path.replace('.csv', '.parquet')
             df.to_parquet(parquet_path, index=False, engine='pyarrow')
             
-            # Remover arquivo CSV original
-            os.remove(csv_file_path)
+            # Manter arquivo CSV original no diretório src/data
+            # os.remove(csv_file_path)
             
             return parquet_path
         except Exception as e:
